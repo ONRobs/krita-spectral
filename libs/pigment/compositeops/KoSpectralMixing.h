@@ -41,14 +41,17 @@ namespace KoSpectral
 
 static constexpr int SIZE = 38;
 
+/// SIZE padded to a multiple of 8, so that the loops over the bands vectorize
+static constexpr int PADDED_SIZE = 40;
+
 /**
  * A color prepared for mixing. Preparing is the expensive part, so callers
  * that mix one color with many pixels should prepare it once.
  */
 struct Pigment {
-    float ks[SIZE];       ///< K/S ratio for every wavelength band
-    float luminance;      ///< CIE Y of the reflectance curve
-    float roundTripError[3]; ///< (spectral round trip of the color) - (the color), linear sRGB
+    alignas(32) float ks[PADDED_SIZE]; ///< K/S ratio for every wavelength band (and padding)
+    float luminance;                   ///< CIE Y of the reflectance curve
+    float roundTripError[3];           ///< (spectral round trip of the color) - (the color), linear sRGB
 };
 
 /**

@@ -161,34 +161,54 @@ static const float XYZ_TO_RGB[3][3] = {
 static constexpr float EPSILON = 1e-8f;
 
 /**
- * spectral.js' white spectrum deviates from a flat line by about 0.1%,
- * which makes mixtures of grays very slightly tinted. Invisible for one
- * mix, but the smudge engine mixes the same pixels hundreds of times with
- * tiny factors, so the tint adds up. A flat white (together with the
- * normalization in Tables) keeps grays exactly neutral.
+ * The hot loops are written so that the compiler can vectorize them
+ * (fixed trip counts that are a multiple of 8, no reductions over the bands
+ * in a single accumulator, restrict pointers). This file is compiled with
+ * -fno-math-errno and -fno-trapping-math (see CMakeLists.txt), otherwise
+ * sqrt() and the comparisons can't be vectorized. On x86-64 Linux
+ * additionally an AVX2/FMA version is compiled and selected at runtime.
  */
-inline float baseSpectrum(int s, int i)
-{
-    return s == 0 ? 1.0f : BASE_SPECTRA[s][i];
-}
+#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__) && defined(__linux__)
+#define SPECTRAL_TARGET_CLONES __attribute__((target_clones("arch=x86-64-v3", "default")))
+#else
+#define SPECTRAL_TARGET_CLONES
+#endif
 
 struct Tables {
-    float reflectanceToRgb[3][SIZE]; ///< XYZ_TO_RGB * CMF
-    float baseLuminance[7];          ///< CIE Y of each base spectrum
+    /// XYZ_TO_RGB * CMF, normalized so that a flat spectrum maps exactly
+    /// to a gray; zero in the padding
+    alignas(32) float reflectanceToRgb[3][PADDED_SIZE];
+
+    /**
+     * Base spectra: white, cyan, magenta, yellow, red, green, blue.
+     *
+     * spectral.js' white spectrum deviates from a flat line by about 0.1%,
+     * which makes mixtures of grays very slightly tinted. Invisible for one
+     * mix, but the smudge engine mixes the same pixels hundreds of times with
+     * tiny factors, so the tint adds up. A flat white (together with the
+     * normalization of reflectanceToRgb) keeps grays exactly neutral.
+     */
+    alignas(32) float baseSpectra[7][PADDED_SIZE];
+
+    float baseLuminance[7]; ///< CIE Y of each base spectrum
 
     Tables()
     {
+        for (int s = 0; s < 7; s++) {
+            for (int i = 0; i < PADDED_SIZE; i++) {
+                baseSpectra[s][i] = (s == 0 || i >= SIZE) ? 1.0f : BASE_SPECTRA[s][i];
+            }
+        }
+
         for (int c = 0; c < 3; c++) {
             double sum = 0.0;
-            for (int i = 0; i < SIZE; i++) {
-                reflectanceToRgb[c][i] = XYZ_TO_RGB[c][0] * CMF[0][i]
-                                       + XYZ_TO_RGB[c][1] * CMF[1][i]
-                                       + XYZ_TO_RGB[c][2] * CMF[2][i];
+            for (int i = 0; i < PADDED_SIZE; i++) {
+                reflectanceToRgb[c][i] = i >= SIZE ? 0.0f :
+                    XYZ_TO_RGB[c][0] * CMF[0][i] + XYZ_TO_RGB[c][1] * CMF[1][i] + XYZ_TO_RGB[c][2] * CMF[2][i];
                 sum += reflectanceToRgb[c][i];
             }
 
-            // normalize, so that a flat spectrum maps exactly to a gray
-            for (int i = 0; i < SIZE; i++) {
+            for (int i = 0; i < PADDED_SIZE; i++) {
                 reflectanceToRgb[c][i] /= float(sum);
             }
         }
@@ -196,7 +216,7 @@ struct Tables {
         for (int s = 0; s < 7; s++) {
             float y = 0.0f;
             for (int i = 0; i < SIZE; i++) {
-                y += CMF[1][i] * baseSpectrum(s, i);
+                y += CMF[1][i] * baseSpectra[s][i];
             }
             baseLuminance[s] = y;
         }
@@ -209,16 +229,58 @@ const Tables &tables()
     return t;
 }
 
-inline float ksFromReflectance(float r)
+/**
+ * Converts a reflectance curve into linear RGB. Uses 8 partial sums per
+ * channel, so the compiler can vectorize it without reordering float math.
+ */
+inline void reflectanceToRgb(const Tables &t, const float *__restrict reflectance, float result[3])
 {
-    const float a = 1.0f - r;
-    return a * a / (2.0f * r);
+    for (int c = 0; c < 3; c++) {
+        float partial[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < PADDED_SIZE; i += 8) {
+            for (int j = 0; j < 8; j++) {
+                partial[j] += t.reflectanceToRgb[c][i + j] * reflectance[i + j];
+            }
+        }
+        result[c] = ((partial[0] + partial[1]) + (partial[2] + partial[3])) +
+                    ((partial[4] + partial[5]) + (partial[6] + partial[7]));
+    }
 }
 
-inline float reflectanceFromKs(float ks)
+SPECTRAL_TARGET_CLONES
+void prepareImpl(const Tables &t, const float *__restrict white, const float *__restrict secondary, const float *__restrict primary,
+                 float w, float secondaryWeight, float primaryWeight,
+                 float *__restrict ks, float roundTrip[3])
 {
-    // == 1 + KS - sqrt(KS^2 + 2KS), but without the cancellation
-    return 1.0f / (1.0f + ks + std::sqrt(ks * (ks + 2.0f)));
+    alignas(32) float back[PADDED_SIZE];
+
+    // plain conditionals instead of std::min/max, which return references and
+    // keep the compiler from vectorizing the loop
+    for (int i = 0; i < PADDED_SIZE; i++) {
+        const float sum = w * white[i] + secondaryWeight * secondary[i] + primaryWeight * primary[i];
+        const float reflectance = sum > EPSILON ? sum : EPSILON;
+        const float a = 1.0f - reflectance;
+        ks[i] = a * a / (2.0f * reflectance);
+        // KM(KS(R)) == min(R, 1/R), so the round trip needs no sqrt
+        const float inverse = 1.0f / reflectance;
+        back[i] = reflectance < inverse ? reflectance : inverse;
+    }
+
+    reflectanceToRgb(t, back, roundTrip);
+}
+
+SPECTRAL_TARGET_CLONES
+void mixImpl(const Tables &t, const float *__restrict ksA, float weightA, const float *__restrict ksB, float weightB, float mixed[3])
+{
+    alignas(32) float reflectance[PADDED_SIZE];
+
+    for (int i = 0; i < PADDED_SIZE; i++) {
+        const float ks = ksA[i] * weightA + ksB[i] * weightB;
+        // == KM(KS) == 1 + KS - sqrt(KS^2 + 2KS), but without the cancellation
+        reflectance[i] = 1.0f / (1.0f + ks + std::sqrt(ks * (ks + 2.0f)));
+    }
+
+    reflectanceToRgb(t, reflectance, mixed);
 }
 
 }
@@ -231,45 +293,41 @@ void prepare(const float linearRgb[3], Pigment &pigment)
     const float g0 = std::clamp(linearRgb[1], 0.0f, 1.0f);
     const float b0 = std::clamp(linearRgb[2], 0.0f, 1.0f);
 
-    // decompose into white + one secondary + one primary, as spectral.js does
+    // decompose into white + one secondary + one primary, as spectral.js does;
+    // of the six other base spectra at most one secondary and one primary
+    // have a non-zero weight
     const float w = std::min({r0, g0, b0});
     const float r1 = r0 - w;
     const float g1 = g0 - w;
     const float b1 = b0 - w;
 
-    const float weights[7] = {
-        w,
-        std::min(g1, b1), // cyan
-        std::min(r1, b1), // magenta
-        std::min(r1, g1), // yellow
+    int secondary = 1; // cyan
+    float secondaryWeight = std::min(g1, b1);
+    if (std::min(r1, b1) > secondaryWeight) {
+        secondary = 2; // magenta
+        secondaryWeight = std::min(r1, b1);
+    }
+    if (std::min(r1, g1) > secondaryWeight) {
+        secondary = 3; // yellow
+        secondaryWeight = std::min(r1, g1);
+    }
+
+    const float primaryWeights[3] = {
         std::max(0.0f, std::min(r1 - b1, r1 - g1)), // red
         std::max(0.0f, std::min(g1 - b1, g1 - r1)), // green
         std::max(0.0f, std::min(b1 - g1, b1 - r1)), // blue
     };
+    const int primaryIndex = int(std::max_element(primaryWeights, primaryWeights + 3) - primaryWeights);
+    const int primary = 4 + primaryIndex;
+    const float primaryWeight = primaryWeights[primaryIndex];
 
-    float luminance = 0.0f;
-    for (int s = 0; s < 7; s++) {
-        luminance += weights[s] * t.baseLuminance[s];
-    }
-    pigment.luminance = std::max(EPSILON, luminance);
+    pigment.luminance = std::max(EPSILON, w * t.baseLuminance[0] +
+                                          secondaryWeight * t.baseLuminance[secondary] +
+                                          primaryWeight * t.baseLuminance[primary]);
 
-    float roundTrip[3] = {0.0f, 0.0f, 0.0f};
-
-    for (int i = 0; i < SIZE; i++) {
-        float reflectance = 0.0f;
-        for (int s = 0; s < 7; s++) {
-            reflectance += weights[s] * baseSpectrum(s, i);
-        }
-        reflectance = std::max(EPSILON, reflectance);
-
-        pigment.ks[i] = ksFromReflectance(reflectance);
-
-        // KM(KS(R)) == min(R, 1/R), so the round trip needs no sqrt
-        const float back = std::min(reflectance, 1.0f / reflectance);
-        roundTrip[0] += t.reflectanceToRgb[0][i] * back;
-        roundTrip[1] += t.reflectanceToRgb[1][i] * back;
-        roundTrip[2] += t.reflectanceToRgb[2][i] * back;
-    }
+    float roundTrip[3];
+    prepareImpl(t, t.baseSpectra[0], t.baseSpectra[secondary], t.baseSpectra[primary],
+                w, secondaryWeight, primaryWeight, pigment.ks, roundTrip);
 
     for (int c = 0; c < 3; c++) {
         pigment.roundTripError[c] = roundTrip[c] - linearRgb[c];
@@ -290,23 +348,13 @@ void mix(const Pigment &a, const float aLinearRgb[3],
         return;
     }
 
-    const Tables &t = tables();
-
     const float invFactor = 1.0f - factor;
     const float concentrationA = invFactor * invFactor * a.luminance;
     const float concentrationB = factor * factor * b.luminance;
     const float normalization = 1.0f / (concentrationA + concentrationB);
-    const float weightA = concentrationA * normalization;
-    const float weightB = concentrationB * normalization;
 
-    float mixed[3] = {0.0f, 0.0f, 0.0f};
-
-    for (int i = 0; i < SIZE; i++) {
-        const float reflectance = reflectanceFromKs(a.ks[i] * weightA + b.ks[i] * weightB);
-        mixed[0] += t.reflectanceToRgb[0][i] * reflectance;
-        mixed[1] += t.reflectanceToRgb[1][i] * reflectance;
-        mixed[2] += t.reflectanceToRgb[2][i] * reflectance;
-    }
+    float mixed[3];
+    mixImpl(tables(), a.ks, concentrationA * normalization, b.ks, concentrationB * normalization, mixed);
 
     for (int c = 0; c < 3; c++) {
         result[c] = mixed[c] - (invFactor * a.roundTripError[c] + factor * b.roundTripError[c]);

@@ -82,6 +82,11 @@ if(MSVC OR (WIN32 AND "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel"))
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /NODEFAULTLIB:LIBC.LIB")
 endif()
 
+# krita-spectral: allow vectorizing sqrt() and comparisons in the spectral mixing loops
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(compositeops/KoSpectralMixing.cpp PROPERTIES COMPILE_OPTIONS "-fno-math-errno;-fno-trapping-math")
+endif()
+
 kis_add_library(kritapigment SHARED ${kritapigment_SRCS})
 
 target_sources(kritapigment
