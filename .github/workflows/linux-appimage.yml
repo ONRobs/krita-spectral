@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: CC0-1.0
+#
+# Builds a Linux AppImage on every push to krita-spectral (or manually),
+# using the same build image and prebuilt dependencies as KDE's GitLab CI.
+
+name: Linux AppImage
+
+on:
+  push:
+    branches: [krita-spectral]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    if: github.repository != 'KDE/krita'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      BUILD_IMAGE: invent-registry.kde.org/sysadmin/ci-images/krita-appimage-2204
+    steps:
+      # Krita + its dependencies need far more disk space than the runner has free by default
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      # Prebuilt deps are re-downloaded from KDE each run; only ccache is
+      # kept, so the cache stays under GitHub's 10 GB per-repo limit
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: _ci-cache/ccache
+          key: appimage-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            appimage-${{ github.ref_name }}-
+            appimage-
+
+      - name: Build
+        run: |
+          docker pull "$BUILD_IMAGE"
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/krita" -w /krita \
+            -e CI_COMMIT_BRANCH="${{ github.ref_name }}" \
+            "$BUILD_IMAGE" \
+            bash build-tools/ci-scripts/github-build-appimage.sh
+
+      - name: Fix workspace ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: krita-appimage-${{ github.sha }}
+          path: _packaging/*.AppImage
+          if-no-files-found: error
+          retention-days: 14

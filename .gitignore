@@ -55,3 +55,8 @@ krita-deps-management/
 # Gradle / Android Studio local state
 .gradle/
 local.properties
+
+# Local runs of build-tools/ci-scripts/github-build-appimage.sh
+_ci-cache/
+venv/
+branch-corrected-deps.yml
