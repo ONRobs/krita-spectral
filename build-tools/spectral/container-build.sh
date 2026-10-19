@@ -136,7 +136,10 @@ appimage)
     activate_env
     cmake --build /krita/_build --parallel "$JOBS"
     rm -rf /krita/_staging
-    DESTDIR=/krita/_staging cmake --install /krita/_build
+    DESTDIR=/krita/_staging cmake --install /krita/_build > /dev/null
+    # the packaging scripts need the python modules from the deps step
+    . /krita/venv/bin/activate
+    unset VIRTUAL_ENV
     python3 -u build-tools/ci-scripts/build-appimage.py
     ls -l /krita/_packaging/*.AppImage
     ;;
