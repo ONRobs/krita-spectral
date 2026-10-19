@@ -34,10 +34,11 @@ struct CachedColor {
     bool isMixable {false};
     KoSpectral::Pigment pigment;
 
-    void update(const float newEncoded[3], const KoSpectralColorTransfer &transfer)
+    /// returns true if the color changed
+    bool update(const float newEncoded[3], const KoSpectralColorTransfer &transfer)
     {
         if (std::equal(newEncoded, newEncoded + 3, encoded)) {
-            return;
+            return false;
         }
 
         std::copy(newEncoded, newEncoded + 3, encoded);
@@ -59,6 +60,36 @@ struct CachedColor {
             transfer.toLinearSrgb(clamped, linear);
             KoSpectral::prepare(linear, pigment);
         }
+
+        return true;
+    }
+};
+
+/**
+ * The colors of the current source and destination pixel and the results
+ * of mixing them. In flat areas the same two colors get mixed over and over,
+ * with only a few distinct factors (a brush mask has 256 levels at most), so
+ * the results are cached per factor until one of the colors changes.
+ */
+struct MixCache {
+    CachedColor src;
+    CachedColor dst;
+
+    struct Entry {
+        quint32 generation {0};
+        float factor {0.0f};
+        float result[3];
+    };
+
+    static constexpr int SIZE = 256;
+    Entry entries[SIZE];
+    quint32 generation {1}; ///< entries of older generations are stale
+
+    Entry &entryFor(float factor)
+    {
+        quint32 bits;
+        std::memcpy(&bits, &factor, sizeof(bits));
+        return entries[(bits ^ (bits >> 7) ^ (bits >> 15)) & (SIZE - 1)];
     }
 };
 
@@ -80,7 +111,7 @@ template<class Traits, bool isCopy>
 class KoCompositeOpSpectral : public KoCompositeOp
 {
     typedef typename Traits::channels_type channels_type;
-    typedef KoSpectralCompositeOpPrivate::CachedColor CachedColor;
+    typedef KoSpectralCompositeOpPrivate::MixCache MixCache;
 
     static const qint32 channels_nb = Traits::channels_nb;
     static const qint32 alpha_pos = Traits::alpha_pos;
@@ -127,8 +158,7 @@ private:
         const qint32 srcInc = (params.srcRowStride == 0) ? 0 : channels_nb;
         const channels_type opacity = scale<channels_type>(params.opacity);
 
-        CachedColor srcColor;
-        CachedColor dstColor;
+        MixCache cache;
 
         quint8 *dstRowStart = params.dstRowStart;
         const quint8 *srcRowStart = params.srcRowStart;
@@ -153,10 +183,10 @@ private:
                 if (isCopy) {
                     newDstAlpha = composeCopy<alphaLocked, allChannelFlags>(src, srcAlpha, dst, dstAlpha,
                                                                             mul(maskAlpha, opacity),
-                                                                            params.channelFlags, srcColor, dstColor);
+                                                                            params.channelFlags, cache);
                 } else {
                     newDstAlpha = composeOver<alphaLocked, allChannelFlags>(src, mul(srcAlpha, maskAlpha, opacity), dst, dstAlpha,
-                                                                            params.channelFlags, srcColor, dstColor);
+                                                                            params.channelFlags, cache);
                 }
 
                 if (!alphaLocked) {
@@ -182,7 +212,7 @@ private:
     inline channels_type composeOver(const channels_type *src, channels_type srcAlpha,
                                      channels_type *dst, channels_type dstAlpha,
                                      const QBitArray &channelFlags,
-                                     CachedColor &srcColor, CachedColor &dstColor) const
+                                     MixCache &cache) const
     {
         using namespace Arithmetic;
 
@@ -191,7 +221,7 @@ private:
         }
 
         if (alphaLocked || dstAlpha == unitValue<channels_type>()) {
-            mixColor<allChannelFlags>(src, dst, scale<float>(srcAlpha), channelFlags, srcColor, dstColor);
+            mixColor<allChannelFlags>(src, dst, scale<float>(srcAlpha), channelFlags, cache);
             return dstAlpha;
         }
 
@@ -202,7 +232,7 @@ private:
         }
 
         const channels_type newDstAlpha = unionShapeOpacity(srcAlpha, dstAlpha);
-        mixColor<allChannelFlags>(src, dst, scale<float>(srcAlpha) / scale<float>(newDstAlpha), channelFlags, srcColor, dstColor);
+        mixColor<allChannelFlags>(src, dst, scale<float>(srcAlpha) / scale<float>(newDstAlpha), channelFlags, cache);
         return newDstAlpha;
     }
 
@@ -212,7 +242,7 @@ private:
                                      channels_type *dst, channels_type dstAlpha,
                                      channels_type opacity,
                                      const QBitArray &channelFlags,
-                                     CachedColor &srcColor, CachedColor &dstColor) const
+                                     MixCache &cache) const
     {
         using namespace Arithmetic;
 
@@ -243,7 +273,7 @@ private:
         // the weight Copy2 gives to the source color in its premultiplied lerp
         const float factor = scale<float>(opacity) * scale<float>(srcAlpha) / scale<float>(newDstAlpha);
 
-        mixColor<allChannelFlags>(src, dst, factor, channelFlags, srcColor, dstColor);
+        mixColor<allChannelFlags>(src, dst, factor, channelFlags, cache);
         return newDstAlpha;
     }
 
@@ -260,7 +290,7 @@ private:
     template<bool allChannelFlags>
     inline void mixColor(const channels_type *src, channels_type *dst, float factor,
                          const QBitArray &channelFlags,
-                         CachedColor &srcColor, CachedColor &dstColor) const
+                         MixCache &cache) const
     {
         using namespace Arithmetic;
 
@@ -280,18 +310,32 @@ private:
         const float srcEncoded[3] = {scale<float>(src[red_pos]), scale<float>(src[green_pos]), scale<float>(src[blue_pos])};
         const float dstEncoded[3] = {scale<float>(dst[red_pos]), scale<float>(dst[green_pos]), scale<float>(dst[blue_pos])};
 
-        srcColor.update(srcEncoded, m_transfer);
-        dstColor.update(dstEncoded, m_transfer);
+        const bool srcChanged = cache.src.update(srcEncoded, m_transfer);
+        const bool dstChanged = cache.dst.update(dstEncoded, m_transfer);
+
+        if (srcChanged || dstChanged) {
+            cache.generation++;
+        }
 
         float result[3];
 
-        if (srcColor.isMixable && dstColor.isMixable) {
-            float mixed[3];
-            KoSpectral::mix(dstColor.pigment, dstColor.linear, srcColor.pigment, srcColor.linear, factor, mixed);
-            m_transfer.fromLinearSrgb(mixed, result);
+        if (cache.src.isMixable && cache.dst.isMixable) {
+            MixCache::Entry &entry = cache.entryFor(factor);
 
-            for (int i = 0; i < 3; i++) {
-                result[i] = std::clamp(result[i], 0.0f, 1.0f);
+            if (entry.generation == cache.generation && entry.factor == factor) {
+                std::copy(entry.result, entry.result + 3, result);
+            } else {
+                float mixed[3];
+                KoSpectral::mix(cache.dst.pigment, cache.dst.linear, cache.src.pigment, cache.src.linear, factor, mixed);
+                m_transfer.fromLinearSrgb(mixed, result);
+
+                for (int i = 0; i < 3; i++) {
+                    result[i] = std::clamp(result[i], 0.0f, 1.0f);
+                }
+
+                entry.generation = cache.generation;
+                entry.factor = factor;
+                std::copy(result, result + 3, entry.result);
             }
         } else {
             for (int i = 0; i < 3; i++) {
