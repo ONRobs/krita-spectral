@@ -16,6 +16,7 @@ kis_add_tests(
     TestFallBackColorTransformation.cpp
     TestKoChannelInfo.cpp
     TestKoSpectralMixing.cpp
+    TestKoCompositeOpSpectral.cpp
 
     LINK_LIBRARIES kritapigment KF${KF_MAJOR}::I18n kritatestsdk
     )

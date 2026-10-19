@@ -135,6 +135,7 @@ KoCompositeOpRegistry::KoCompositeOpRegistry()
     m_map.insert(m_categories[6], KoID(COMPOSITE_PENUMBRAB       ,  i18nc("Blending mode - Penumbra B", "Penumbra B")));
     m_map.insert(m_categories[6], KoID(COMPOSITE_PENUMBRAC       ,  i18nc("Blending mode - Penumbra C", "Penumbra C")));
     m_map.insert(m_categories[6], KoID(COMPOSITE_PENUMBRAD       ,  i18nc("Blending mode - Penumbra D", "Penumbra D")));
+    m_map.insert(m_categories[6], KoID(COMPOSITE_SPECTRAL        ,  i18nc("Blending mode - Spectral (Kubelka-Munk paint mixing)", "Spectral"))); // krita-spectral
 
     m_map.insert(m_categories[7], KoID(COMPOSITE_BUMPMAP   ,  i18nc("Blending mode - Bumpmap", "Bumpmap")));
     m_map.insert(m_categories[7], KoID(COMPOSITE_COMBINE_NORMAL,  i18nc("Blending mode - Combine Normal Map", "Combine Normal Map")));

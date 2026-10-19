@@ -79,6 +79,7 @@ const QString COMPOSITE_PENUMBRAA     = "penumbra a";
 const QString COMPOSITE_PENUMBRAB     = "penumbra b";
 const QString COMPOSITE_PENUMBRAC     = "penumbra c";
 const QString COMPOSITE_PENUMBRAD     = "penumbra d";
+const QString COMPOSITE_SPECTRAL      = "spectral"; // krita-spectral
 const QString COMPOSITE_MARKER        = "marker";
 
 const QString COMPOSITE_DARKEN      = "darken";
@@ -156,6 +157,7 @@ const QString COMPOSITE_COPY         = "copy";
 const QString COMPOSITE_COPY_RED     = "copy_red";
 const QString COMPOSITE_COPY_GREEN   = "copy_green";
 const QString COMPOSITE_COPY_BLUE    = "copy_blue";
+const QString COMPOSITE_COPY_SPECTRAL = "copy_spectral"; // krita-spectral, internal, used by the color smudge engine
 const QString COMPOSITE_TANGENT_NORMALMAP    = "tangent_normalmap";
 
 const QString COMPOSITE_COLORIZE     = "colorize";

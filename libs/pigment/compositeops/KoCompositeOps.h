@@ -31,6 +31,7 @@
 #include "compositeops/KoColorSpaceBlendingPolicy.h"
 #include "compositeops/KoCompositeOpClampPolicy.h"
 #include "KoOptimizedCompositeOpFactory.h"
+#include "compositeops/KoSpectralCompositeOps.h" // krita-spectral
 
 namespace _Private {
 
@@ -444,6 +445,10 @@ void addStandardCompositeOps(KoColorSpace* cs)
     _Private::AddGeneralOps      <_Traits_, useGeneralOps>::add(cs);
     _Private::AddRGBOps          <_Traits_, useRGBOps    >::add(cs);
     _Private::AddGeneralAlphaOps <_Traits_, useGeneralOps>::add(cs);
+
+    if constexpr (useRGBOps) {
+        addSpectralCompositeOps<_Traits_>(cs); // krita-spectral
+    }
 
 }
 
