@@ -20,8 +20,10 @@ class KoColorProfile;
  *
  * The conversion uses the actual tone curve and primaries of the profile:
  *
- *  - linear, sRGB and pure gamma curves are evaluated exactly
- *  - any other curve is sampled from the profile into lookup tables
+ *  - linear curves need no conversion
+ *  - sRGB and pure gamma curves are sampled from their exact formulas,
+ *    any other curve from the profile, into lookup tables (pow() per
+ *    pixel is too slow for painting)
  *  - non-sRGB primaries are converted with a 3x3 matrix built from the
  *    profile colorants (relative colorimetric, Bradford adaptation to D65)
  *
@@ -47,19 +49,11 @@ public:
     bool isLinear() const;
 
 private:
-    enum Curve {
-        Linear,
-        Srgb,
-        Gamma,
-        Table
-    };
-
     float linearize(float value) const;
     float delinearize(float value) const;
 
 private:
-    Curve m_curve {Srgb};
-    float m_gamma {1.0f};
+    bool m_isLinear {false};
 
     bool m_hasMatrix {false};
     float m_toSrgb[3][3];

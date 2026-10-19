@@ -18,22 +18,24 @@
 namespace
 {
 
-static constexpr int TABLE_SIZE = 4096;
+static constexpr int LINEARIZE_TABLE_SIZE = 4097;
+static constexpr int DELINEARIZE_TABLE_SIZE = 8193;
 
-inline float srgbToLinear(float x)
+double srgbToLinear(double x)
 {
-    return x <= 0.04045f ? x / 12.92f : std::pow((x + 0.055f) / 1.055f, 2.4f);
+    return x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4);
 }
 
-inline float linearToSrgb(float x)
+double linearToSrgb(double x)
 {
-    return x <= 0.0031308f ? x * 12.92f : 1.055f * std::pow(x, 1.0f / 2.4f) - 0.055f;
+    return x <= 0.0031308 ? x * 12.92 : 1.055 * std::pow(x, 1.0 / 2.4) - 0.055;
 }
 
 inline float sampleTable(const QVector<float> &table, float position)
 {
-    position = std::clamp(position, 0.0f, 1.0f) * (TABLE_SIZE - 1);
-    const int index = std::min(int(position), TABLE_SIZE - 2);
+    const int size = table.size();
+    position = std::clamp(position, 0.0f, 1.0f) * (size - 1);
+    const int index = std::min(int(position), size - 2);
     const float fraction = position - index;
     return table[index] + (table[index + 1] - table[index]) * fraction;
 }
@@ -49,61 +51,87 @@ inline void multiply(const float m[3][3], const float in[3], float out[3])
 
 KoSpectralColorTransfer::KoSpectralColorTransfer(const KoColorProfile *profile)
 {
-    if (!profile) {
-        return;
-    }
+    enum {
+        Srgb,
+        Gamma,
+        FromProfile
+    } curve = Srgb;
+    double gamma = 1.0;
 
-    switch (profile->getTransferCharacteristics()) {
-    case TRC_LINEAR:
-        m_curve = Linear;
-        break;
-    case TRC_IEC_61966_2_1:
-        m_curve = Srgb;
-        break;
-    case TRC_GAMMA_1_8:
-        m_curve = Gamma;
-        m_gamma = 1.8f;
-        break;
-    case TRC_ITU_R_BT_470_6_SYSTEM_M:
-        m_curve = Gamma;
-        m_gamma = 2.2f;
-        break;
-    case TRC_A98:
-        m_curve = Gamma;
-        m_gamma = 563.0f / 256.0f;
-        break;
-    case TRC_GAMMA_2_4:
-        m_curve = Gamma;
-        m_gamma = 2.4f;
-        break;
-    case TRC_ITU_R_BT_470_6_SYSTEM_B_G:
-        m_curve = Gamma;
-        m_gamma = 2.8f;
-        break;
-    default:
-        if (profile->hasTRC()) {
-            m_curve = Table;
+    if (profile) {
+        switch (profile->getTransferCharacteristics()) {
+        case TRC_LINEAR:
+            m_isLinear = true;
+            break;
+        case TRC_IEC_61966_2_1:
+            curve = Srgb;
+            break;
+        case TRC_GAMMA_1_8:
+            curve = Gamma;
+            gamma = 1.8;
+            break;
+        case TRC_ITU_R_BT_470_6_SYSTEM_M:
+            curve = Gamma;
+            gamma = 2.2;
+            break;
+        case TRC_A98:
+            curve = Gamma;
+            gamma = 563.0 / 256.0;
+            break;
+        case TRC_GAMMA_2_4:
+            curve = Gamma;
+            gamma = 2.4;
+            break;
+        case TRC_ITU_R_BT_470_6_SYSTEM_B_G:
+            curve = Gamma;
+            gamma = 2.8;
+            break;
+        default:
+            if (profile->hasTRC()) {
+                curve = FromProfile;
+            }
+            break;
         }
-        break;
     }
 
-    if (m_curve == Table) {
-        m_linearizeTable.resize(TABLE_SIZE);
-        m_delinearizeTable.resize(TABLE_SIZE);
+    if (!m_isLinear) {
+        m_linearizeTable.resize(LINEARIZE_TABLE_SIZE);
+        m_delinearizeTable.resize(DELINEARIZE_TABLE_SIZE);
 
         QVector<qreal> value(3);
 
-        for (int i = 0; i < TABLE_SIZE; i++) {
-            const qreal x = qreal(i) / (TABLE_SIZE - 1);
+        for (int i = 0; i < LINEARIZE_TABLE_SIZE; i++) {
+            const qreal x = qreal(i) / (LINEARIZE_TABLE_SIZE - 1);
 
-            value.fill(x);
-            profile->linearizeFloatValue(value);
-            m_linearizeTable[i] = value[0];
-
-            value.fill(x * x);
-            profile->delinearizeFloatValue(value);
-            m_delinearizeTable[i] = value[0];
+            if (curve == Srgb) {
+                m_linearizeTable[i] = srgbToLinear(x);
+            } else if (curve == Gamma) {
+                m_linearizeTable[i] = std::pow(x, gamma);
+            } else {
+                value.fill(x);
+                profile->linearizeFloatValue(value);
+                m_linearizeTable[i] = value[0];
+            }
         }
+
+        for (int i = 0; i < DELINEARIZE_TABLE_SIZE; i++) {
+            const qreal u = qreal(i) / (DELINEARIZE_TABLE_SIZE - 1);
+            const qreal x = u * u;
+
+            if (curve == Srgb) {
+                m_delinearizeTable[i] = linearToSrgb(x);
+            } else if (curve == Gamma) {
+                m_delinearizeTable[i] = std::pow(x, 1.0 / gamma);
+            } else {
+                value.fill(x);
+                profile->delinearizeFloatValue(value);
+                m_delinearizeTable[i] = value[0];
+            }
+        }
+    }
+
+    if (!profile) {
+        return;
     }
 
     // LcmsColorProfileContainer pads the result with empty entries,
@@ -141,37 +169,19 @@ KoSpectralColorTransfer::KoSpectralColorTransfer(const KoColorProfile *profile)
 
 bool KoSpectralColorTransfer::isLinear() const
 {
-    return m_curve == Linear;
+    return m_isLinear;
 }
 
 float KoSpectralColorTransfer::linearize(float value) const
 {
-    switch (m_curve) {
-    case Linear:
-        return value;
-    case Srgb:
-        return srgbToLinear(value);
-    case Gamma:
-        return value > 0.0f ? std::pow(value, m_gamma) : 0.0f;
-    case Table:
-        return sampleTable(m_linearizeTable, value);
-    }
-    return value;
+    return m_isLinear ? value : sampleTable(m_linearizeTable, value);
 }
 
 float KoSpectralColorTransfer::delinearize(float value) const
 {
-    switch (m_curve) {
-    case Linear:
-        return value;
-    case Srgb:
-        return linearToSrgb(value);
-    case Gamma:
-        return value > 0.0f ? std::pow(value, 1.0f / m_gamma) : 0.0f;
-    case Table:
-        return sampleTable(m_delinearizeTable, std::sqrt(std::max(0.0f, value)));
-    }
-    return value;
+    // sampled over sqrt() of the linear value, to have enough samples
+    // in the shadows, where the curves are steep
+    return m_isLinear ? value : sampleTable(m_delinearizeTable, std::sqrt(std::max(0.0f, value)));
 }
 
 void KoSpectralColorTransfer::toLinearSrgb(const float encoded[3], float linear[3]) const
