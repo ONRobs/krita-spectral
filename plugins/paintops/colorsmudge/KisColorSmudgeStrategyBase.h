@@ -116,6 +116,7 @@ public:
 
 protected:
     const KoCompositeOp * m_colorRateOp {nullptr};
+    bool m_useSpectral {false}; // krita-spectral
     KoColor m_preparedDullingColor;
     const KoCompositeOp * m_smearOp {nullptr};
 private:

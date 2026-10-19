@@ -11,6 +11,7 @@
 #include "kis_fixed_paint_device.h"
 #include "kis_paint_device.h"
 #include "KisColorSmudgeSampleUtils.h"
+#include "KisColorSmudgeSpectralUtils.h" // krita-spectral
 
 /**********************************************************************************/
 /*                 DabColoringStrategyMask                                        */
@@ -31,7 +32,7 @@ void KisColorSmudgeStrategyBase::DabColoringStrategyMask::blendInFusedBackground
     KIS_SAFE_ASSERT_RECOVER_RETURN(*paintColor.colorSpace() == *colorRateOp->colorSpace());
     colorRateOp->composite(dullingFillColor.data(), 1, paintColor.data(), 1, 0, 0, 1, 1, colorRateOpacity);
 
-    if (smearOp->id() == COMPOSITE_COPY && qFuzzyCompare(smudgeRateOpacity, OPACITY_OPAQUE_F)) {
+    if (KisColorSmudgeSpectralUtils::isCopyOp(smearOp) && qFuzzyCompare(smudgeRateOpacity, OPACITY_OPAQUE_F)) {
         dst->fill(dst->bounds(), dullingFillColor);
     } else {
         src->readBytes(dst->data(), dstRect);
@@ -119,6 +120,7 @@ void KisColorSmudgeStrategyBase::initializePaintingImpl(const KoColorSpace *dstC
                                                         const QString &colorRateCompositeOpId)
 {
     m_blendDevice = new KisFixedPaintDevice(dstColorSpace, m_memoryAllocator);
+    m_useSpectral = KisColorSmudgeSpectralUtils::useSpectralMixing(dstColorSpace, colorRateCompositeOpId); // krita-spectral
     m_smearOp = dstColorSpace->compositeOp(smearCompositeOp(smearAlpha));
     m_colorRateOp = dstColorSpace->compositeOp(colorRateCompositeOpId);
     m_preparedDullingColor.convertTo(dstColorSpace);
@@ -134,13 +136,13 @@ const KoColorSpace *KisColorSmudgeStrategyBase::preciseColorSpace() const
 
 QString KisColorSmudgeStrategyBase::smearCompositeOp(bool smearAlpha) const
 {
-    return smearAlpha ? COMPOSITE_COPY : COMPOSITE_OVER;
+    return KisColorSmudgeSpectralUtils::spectralVariant(smearAlpha ? COMPOSITE_COPY : COMPOSITE_OVER, m_useSpectral);
 }
 
 QString KisColorSmudgeStrategyBase::finalCompositeOp(bool smearAlpha) const
 {
     Q_UNUSED(smearAlpha);
-    return COMPOSITE_COPY;
+    return KisColorSmudgeSpectralUtils::spectralVariant(COMPOSITE_COPY, m_useSpectral);
 }
 
 qreal KisColorSmudgeStrategyBase::finalPainterOpacity(qreal opacity, qreal smudgeRateValue)
@@ -212,7 +214,9 @@ KisColorSmudgeStrategyBase::blendBrush(const QVector<KisPainter *> dstPainters, 
         coloringStrategy.supportsFusedDullingBlending() &&
         ((m_smearOp->id() == COMPOSITE_OVER &&
           m_colorRateOp->id() == COMPOSITE_OVER) ||
-         (m_smearOp->id() == COMPOSITE_COPY &&
+         (m_smearOp->id() == COMPOSITE_SPECTRAL &&
+          m_colorRateOp->id() == COMPOSITE_SPECTRAL) || // krita-spectral
+         (KisColorSmudgeSpectralUtils::isCopyOp(m_smearOp) &&
           qFuzzyCompare(dullingRateOpacity, OPACITY_OPAQUE_F)))) {
 
         coloringStrategy.blendInFusedBackgroundAndColorRateWithDulling(m_blendDevice,
@@ -265,7 +269,7 @@ void KisColorSmudgeStrategyBase::blendInBackgroundWithSmearing(KisFixedPaintDevi
                                                                const QRect &srcRect, const QRect &dstRect,
                                                                const qreal smudgeRateOpacity)
 {
-    if (m_smearOp->id() == COMPOSITE_COPY && qFuzzyCompare(smudgeRateOpacity, OPACITY_OPAQUE_F)) {
+    if (KisColorSmudgeSpectralUtils::isCopyOp(m_smearOp) && qFuzzyCompare(smudgeRateOpacity, OPACITY_OPAQUE_F)) {
         src->readBytes(dst->data(), srcRect);
     } else {
         src->readBytes(dst->data(), dstRect);
@@ -289,7 +293,7 @@ void KisColorSmudgeStrategyBase::blendInBackgroundWithDulling(KisFixedPaintDevic
 {
     Q_UNUSED(preparedDullingColor);
 
-    if (m_smearOp->id() == COMPOSITE_COPY && qFuzzyCompare(smudgeRateOpacity, OPACITY_OPAQUE_F)) {
+    if (KisColorSmudgeSpectralUtils::isCopyOp(m_smearOp) && qFuzzyCompare(smudgeRateOpacity, OPACITY_OPAQUE_F)) {
         dst->fill(dst->bounds(), m_preparedDullingColor);
     } else {
         src->readBytes(dst->data(), dstRect);

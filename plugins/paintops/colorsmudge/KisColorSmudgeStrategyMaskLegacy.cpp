@@ -9,6 +9,7 @@
 #include <QtMath>
 #include "KisColorSmudgeStrategyMaskLegacy.h"
 #include "KisColorSmudgeSampleUtils.h"
+#include "KisColorSmudgeSpectralUtils.h" // krita-spectral
 
 #include "kis_image.h"
 
@@ -37,12 +38,12 @@ void KisColorSmudgeStrategyMaskLegacy::sampleDullingColor(const QRect &srcRect, 
 QString KisColorSmudgeStrategyMaskLegacy::smearCompositeOp(bool smearAlpha) const
 {
     Q_UNUSED(smearAlpha);
-    return COMPOSITE_COPY;
+    return KisColorSmudgeSpectralUtils::spectralVariant(COMPOSITE_COPY, m_useSpectral);
 }
 
 QString KisColorSmudgeStrategyMaskLegacy::finalCompositeOp(bool smearAlpha) const
 {
-    return smearAlpha ? COMPOSITE_COPY : COMPOSITE_OVER;
+    return KisColorSmudgeSpectralUtils::spectralVariant(smearAlpha ? COMPOSITE_COPY : COMPOSITE_OVER, m_useSpectral);
 }
 
 qreal KisColorSmudgeStrategyMaskLegacy::finalPainterOpacity(qreal opacity, qreal smudgeRateValue)
