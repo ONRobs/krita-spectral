@@ -26,6 +26,8 @@ private Q_SLOTS:
     void testTransferRoundTrip();
     void testTransferMatchesLcms_data();
     void testTransferMatchesLcms();
+    void testTransferKeepsNeutralsNeutral_data();
+    void testTransferKeepsNeutralsNeutral();
 };
 
 #endif // TESTKOSPECTRALMIXING_H

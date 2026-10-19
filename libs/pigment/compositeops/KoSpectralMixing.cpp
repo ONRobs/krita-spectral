@@ -160,24 +160,43 @@ static const float XYZ_TO_RGB[3][3] = {
 // product (which is what ends up in the mix) stays the same.
 static constexpr float EPSILON = 1e-8f;
 
+/**
+ * spectral.js' white spectrum deviates from a flat line by about 0.1%,
+ * which makes mixtures of grays very slightly tinted. Invisible for one
+ * mix, but the smudge engine mixes the same pixels hundreds of times with
+ * tiny factors, so the tint adds up. A flat white (together with the
+ * normalization in Tables) keeps grays exactly neutral.
+ */
+inline float baseSpectrum(int s, int i)
+{
+    return s == 0 ? 1.0f : BASE_SPECTRA[s][i];
+}
+
 struct Tables {
     float reflectanceToRgb[3][SIZE]; ///< XYZ_TO_RGB * CMF
     float baseLuminance[7];          ///< CIE Y of each base spectrum
 
     Tables()
     {
-        for (int i = 0; i < SIZE; i++) {
-            for (int c = 0; c < 3; c++) {
+        for (int c = 0; c < 3; c++) {
+            double sum = 0.0;
+            for (int i = 0; i < SIZE; i++) {
                 reflectanceToRgb[c][i] = XYZ_TO_RGB[c][0] * CMF[0][i]
                                        + XYZ_TO_RGB[c][1] * CMF[1][i]
                                        + XYZ_TO_RGB[c][2] * CMF[2][i];
+                sum += reflectanceToRgb[c][i];
+            }
+
+            // normalize, so that a flat spectrum maps exactly to a gray
+            for (int i = 0; i < SIZE; i++) {
+                reflectanceToRgb[c][i] /= float(sum);
             }
         }
 
         for (int s = 0; s < 7; s++) {
             float y = 0.0f;
             for (int i = 0; i < SIZE; i++) {
-                y += CMF[1][i] * BASE_SPECTRA[s][i];
+                y += CMF[1][i] * baseSpectrum(s, i);
             }
             baseLuminance[s] = y;
         }
@@ -239,7 +258,7 @@ void prepare(const float linearRgb[3], Pigment &pigment)
     for (int i = 0; i < SIZE; i++) {
         float reflectance = 0.0f;
         for (int s = 0; s < 7; s++) {
-            reflectance += weights[s] * BASE_SPECTRA[s][i];
+            reflectance += weights[s] * baseSpectrum(s, i);
         }
         reflectance = std::max(EPSILON, reflectance);
 

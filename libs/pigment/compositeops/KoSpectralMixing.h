@@ -28,6 +28,9 @@
  *  - KM() uses the algebraically equivalent form 1 / (1 + KS + sqrt(KS^2 + 2KS)),
  *    which doesn't lose precision for dark colors in single precision floats
  *
+ *  - white is a flat spectrum and the spectrum to RGB conversion is
+ *    normalized, so that mixtures of grays are exactly neutral
+ *
  *  - mix() compensates for the round-trip error of each input color, so that
  *    mixing with factor 0 or 1, or mixing a color with itself, returns the
  *    input exactly. Without that the smudge engine, which re-mixes the same

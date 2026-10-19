@@ -323,4 +323,40 @@ void TestKoSpectralMixing::testTransferMatchesLcms()
     }
 }
 
+void TestKoSpectralMixing::testTransferKeepsNeutralsNeutral_data()
+{
+    QTest::addColumn<QString>("profileName");
+
+    KoColorSpaceRegistry *registry = KoColorSpaceRegistry::instance();
+    QTest::newRow("rgb8 default") << registry->rgb8()->profile()->name();
+    QTest::newRow("rgb16 default") << registry->rgb16()->profile()->name();
+    QTest::newRow("f32 default") << registry->colorSpace(RGBAColorModelID.id(), Float32BitsColorDepthID.id(), QString())->profile()->name();
+    QTest::newRow("ClayRGB gamma 2.2") << "ClayRGB-elle-V2-g22.icc";
+    QTest::newRow("linear rec2020") << "Rec2020-elle-V4-g10.icc";
+}
+
+void TestKoSpectralMixing::testTransferKeepsNeutralsNeutral()
+{
+    QFETCH(QString, profileName);
+
+    const KoColorProfile *profile = KoColorSpaceRegistry::instance()->profileByName(profileName);
+    if (!profile) {
+        QSKIP("profile is not installed");
+    }
+
+    KoSpectralColorTransfer transfer(profile);
+
+    // a gray in any RGB profile must stay a gray in linear sRGB, otherwise
+    // the spectral mixing tints it
+    for (int i = 0; i <= 16; i++) {
+        const float value = i / 16.0f;
+        const float encoded[3] = {value, value, value};
+        float linear[3];
+        transfer.toLinearSrgb(encoded, linear);
+
+        QVERIFY2(std::abs(linear[0] - linear[1]) < 1e-5f && std::abs(linear[1] - linear[2]) < 1e-5f,
+                 qPrintable(QString("%1: (%2 %3 %4)").arg(value).arg(linear[0], 0, 'g', 8).arg(linear[1], 0, 'g', 8).arg(linear[2], 0, 'g', 8)));
+    }
+}
+
 KISTEST_MAIN(TestKoSpectralMixing)
