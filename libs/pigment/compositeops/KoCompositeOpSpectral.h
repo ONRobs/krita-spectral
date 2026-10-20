@@ -19,6 +19,7 @@
 
 #include "KoSpectralColorTransfer.h"
 #include "KoSpectralMixing.h"
+#include "KoSpectralParallel.h"
 
 namespace KoSpectralCompositeOpPrivate
 {
@@ -129,7 +130,60 @@ public:
 
     using KoCompositeOp::composite;
 
+    /**
+     * Spectral mixing is much slower than the other blending modes, so large
+     * areas (big brush dabs, the color smudge buffers) are split between
+     * threads. Smaller areas, like the 64x64 tiles of the projection, are
+     * done directly.
+     */
     void composite(const KoCompositeOp::ParameterInfo &params) const override
+    {
+        static constexpr qint64 minPixelsPerJob = 1024;
+
+        const qint64 pixels = qint64(params.rows) * params.cols;
+        const int jobs = KoSpectralParallel::jobCount(int(std::min<qint64>(pixels / minPixelsPerJob, 64)));
+
+        if (jobs <= 1) {
+            compositeRange(params);
+            return;
+        }
+
+        // split into bands of rows, or of columns for single row calls
+        // (the smudge engine composites whole buffers as one long row)
+        const bool splitRows = params.rows > 1;
+        const int length = splitRows ? params.rows : params.cols;
+        const int parts = std::min(jobs * 4, length);
+
+        KoSpectralParallel::run(parts, [&](int part) {
+            const int begin = qint64(length) * part / parts;
+            const int end = qint64(length) * (part + 1) / parts;
+
+            KoCompositeOp::ParameterInfo range(params);
+
+            if (splitRows) {
+                range.rows = end - begin;
+                range.dstRowStart += qint64(begin) * params.dstRowStride;
+                range.srcRowStart += qint64(begin) * params.srcRowStride;
+                if (range.maskRowStart) {
+                    range.maskRowStart += qint64(begin) * params.maskRowStride;
+                }
+            } else {
+                range.cols = end - begin;
+                range.dstRowStart += qint64(begin) * pixel_size;
+                if (params.srcRowStride != 0) {
+                    range.srcRowStart += qint64(begin) * pixel_size;
+                }
+                if (range.maskRowStart) {
+                    range.maskRowStart += begin;
+                }
+            }
+
+            compositeRange(range);
+        });
+    }
+
+private:
+    void compositeRange(const KoCompositeOp::ParameterInfo &params) const
     {
         const bool allChannelFlags = params.channelFlags.isEmpty() || params.channelFlags == QBitArray(channels_nb, true);
         const bool alphaLocked = !params.channelFlags.isEmpty() && !params.channelFlags.testBit(alpha_pos);

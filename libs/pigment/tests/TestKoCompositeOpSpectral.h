@@ -33,6 +33,8 @@ private Q_SLOTS:
     void testCopy_data();
     void testCopy();
     void testHdrValuesFallBack();
+    void testThreadedMatchesSerial_data();
+    void testThreadedMatchesSerial();
 };
 
 #endif // TESTKOCOMPOSITEOPSPECTRAL_H

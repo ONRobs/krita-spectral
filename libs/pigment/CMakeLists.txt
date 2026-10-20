@@ -60,6 +60,7 @@ set(kritapigment_SRCS
     compositeops/KoColorSpaceBlendingPolicy.cpp
     compositeops/KoSpectralMixing.cpp
     compositeops/KoSpectralColorTransfer.cpp
+    compositeops/KoSpectralParallel.cpp
     ${__per_arch_factory_objs}
     ${__per_arch_alpha_applicator_factory_objs}
     ${__per_arch_rgb_scaler_factory_objs}

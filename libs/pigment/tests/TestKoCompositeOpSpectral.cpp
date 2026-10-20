@@ -390,4 +390,52 @@ void TestKoCompositeOpSpectral::testHdrValuesFallBack()
     QCOMPARE(dst[3], 1.0f);
 }
 
+void TestKoCompositeOpSpectral::testThreadedMatchesSerial_data()
+{
+    addRgbColorSpaces();
+}
+
+void TestKoCompositeOpSpectral::testThreadedMatchesSerial()
+{
+    QFETCH(const KoColorSpace *, cs);
+
+    // large areas are split between threads, rows of 200 pixels are not
+    const int width = 200;
+    const int height = 150;
+    const int pixelSize = cs->pixelSize();
+
+    QVector<QColor> srcColors;
+    QVector<QColor> dstColors;
+    QVector<quint8> mask;
+    for (int i = 0; i < width * height; i++) {
+        srcColors << QColor((i * 7) % 256, (i * 13) % 256, (i * 29) % 256, 128 + i % 128);
+        dstColors << QColor((i * 11) % 256, (i * 3) % 256, (i * 17) % 256, i % 256);
+        mask << quint8((i * 5) % 256);
+    }
+
+    for (const QString &opId : {COMPOSITE_SPECTRAL, COMPOSITE_COPY_SPECTRAL}) {
+        const KoCompositeOp *op = cs->compositeOp(opId);
+        Pixels src(cs, srcColors);
+
+        Pixels threaded(cs, dstColors);
+        op->composite(threaded.bytes(), width * pixelSize, src.bytes(), width * pixelSize,
+                      mask.constData(), width, height, width, 0.7f);
+
+        // the color smudge engine passes whole buffers as a single row
+        Pixels threadedSingleRow(cs, dstColors);
+        op->composite(threadedSingleRow.bytes(), width * height * pixelSize, src.bytes(), width * height * pixelSize,
+                      mask.constData(), width * height, 1, width * height, 0.7f);
+
+        Pixels serial(cs, dstColors);
+        for (int y = 0; y < height; y++) {
+            op->composite(serial.bytes() + y * width * pixelSize, width * pixelSize,
+                          src.bytes() + y * width * pixelSize, width * pixelSize,
+                          mask.constData() + y * width, width, 1, width, 0.7f);
+        }
+
+        QVERIFY2(threaded.data == serial.data, qPrintable(opId));
+        QVERIFY2(threadedSingleRow.data == serial.data, qPrintable(opId));
+    }
+}
+
 KISTEST_MAIN(TestKoCompositeOpSpectral)
